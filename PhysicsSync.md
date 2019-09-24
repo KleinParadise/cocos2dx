@@ -100,3 +100,41 @@ function _M:addPhysicsWorldListenerEvent(physicalNode)
 end
 ```
 
+#### 记录每帧刚体的速度,角速度,位置等数据
+```lua
+function _M:recordKeyFrame(physicsNode, frame)
+    --print("try record=====", physicsNode:getName())
+    if self._updateSchedule == nil or not physicsNode:getPhysicsBody():isDynamic() then
+        return
+    end
+    local speed = print("record===============", physicsNode:getName(), frame or self._recordingFrame)
+    local physicsBody = physicsNode:getPhysicsBody() --获取节点绑定的刚体
+    local frameBody = {}
+    local x, y = physicsNode:getPosition() --物理节点该帧的位置
+    local velocity = physicsBody:getVelocity() --x,y的速度
+    local angularVelocity = physicsBody:getAngularVelocity() --角速度
+    frameBody.x = math.ceil(x * SYNC_PRECISION)
+    frameBody.y = math.ceil(y * SYNC_PRECISION)
+    --frameBody.speedX = math.ceil(velocity.x * 1000)
+    --frameBody.speedY = math.ceil(velocity.y * 1000)
+    frameBody.velocityLen = math.ceil(cc.pGetLength(velocity) * SYNC_PRECISION)
+    frameBody.speedR = math.ceil(angularVelocity* SYNC_PRECISION)
+    frameBody.frame = frame or self._recordingFrame
+    local pId = physicsNode:getName()
+    for k, v in pairs(self._frameCollection.data) do
+        if v.id == pId then
+            --只有最后一个有可能重复
+            if #v.frames > 0 and v.frames[#v.frames].frame == frameBody.frame then
+                v.frames[#v.frames] = frameBody
+                return
+            end
+            table.insert(v.frames, frameBody)
+            return
+        end
+    end
+    local userFrame = {id = pId, frames = {}}
+    table.insert(self._frameCollection.data, userFrame)
+    table.insert(userFrame.frames, frameBody)
+end
+```
+
