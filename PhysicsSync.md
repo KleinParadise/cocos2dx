@@ -41,3 +41,62 @@ function _M:onCreate()
     self._football = Football.new(self._physicalNode,self._viewNode) --球初始化
 end
 ```
+
+#### 监听物理层碰撞事件
+```lua
+function _M:addPhysicsWorldListenerEvent(physicalNode)
+    local function onContactBegin(contact)
+        return true
+    end
+
+
+    local function onContactSperate(contact)
+        if not self._frameCollection then return end
+        local a = contact:getShapeA():getBody():getNode()
+        local b = contact:getShapeB():getBody():getNode()
+
+        self:recordKeyFrame(a)
+        self:recordKeyFrame(b)
+
+        --记录碰撞,要播放的效果
+        if a:getName() == "ball" then
+        	--记录撞墙帧数据
+            if b:getName() == "wall" then
+                local x,y = self._football._physicalNode:getPosition()
+
+                local frameBody = {id = b:getName(), frame = self._recordingFrame, eff = 'walleff',pos = {x = math.ceil(x*SYNC_PRECISION),y = math.ceil(y*SYNC_PRECISION)},uid = iPlayerUid}
+                table.insert(self._frameCollection.effs, frameBody)
+            end
+            --记录撞钻石帧数据
+            local obstacleObj = self._obstacleList:getSingleObstacleByName(b:getName())
+            if obstacleObj then
+                if obstacleObj._iMainType == OBSTACLE_MAINTYPE_CONF.BOTTLE then
+                    if a:getTag() == obstacleObj._obstacleNode:getTag() then
+                        if self._updateSchedule == nil then
+                            return
+                        end
+                        obstacleObj:recordPhysicsImpactCount(false)
+                        local sEffectName = "bottlerupture"
+                        local frameBody = {id = b:getName(), frame = self._recordingFrame, eff = sEffectName,uid = iPlayerUid}
+                        table.insert(self._frameCollection.effs, frameBody)
+                        self._iBottleImpactCount = self._iBottleImpactCount + 1
+                        if self._iBottleImpactCount >= BOTTLE_IMPACT_LIMIT then
+                            self._football:setIsSleep(true, true)
+                        end
+                    else
+                        table.insert(self._frameCollection.effs, {id = b:getName(), frame = self._recordingFrame, eff = "bottleself",uid = iPlayerUid})
+                    end
+                end
+            end
+            self._football:addCollisionCount() --球的弹射次数。
+        end
+    end
+
+    local contactListener = cc.EventListenerPhysicsContact:create()
+    contactListener:registerScriptHandler(onContactBegin, cc.Handler.EVENT_PHYSICS_CONTACT_BEGIN)
+    contactListener:registerScriptHandler(onContactSperate, cc.Handler.EVENT_PHYSICS_CONTACT_SEPARATE)
+    local eventDispatcher = self._physicalNode:getEventDispatcher()
+    eventDispatcher:addEventListenerWithSceneGraphPriority(contactListener, physicalNode)
+end
+```
+
