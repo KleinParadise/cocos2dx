@@ -49,7 +49,6 @@ function _M:addPhysicsWorldListenerEvent(physicalNode)
         return true
     end
 
-
     local function onContactSperate(contact)
         if not self._frameCollection then return end
         local a = contact:getShapeA():getBody():getNode()
@@ -135,6 +134,215 @@ function _M:recordKeyFrame(physicsNode, frame)
     local userFrame = {id = pId, frames = {}}
     table.insert(self._frameCollection.data, userFrame)
     table.insert(userFrame.frames, frameBody)
+end
+```
+
+#### 启动定时器,记录帧数据
+```lua
+function _M:record()
+    self._frameCollection = {data = {}, springs = {}, effs = {}, ai = aiAction}
+    self._recordingFrame = 0
+    --这个schedule是用来防止记录时间太长死循环的
+    self._updateSchedule =
+        Scheduler.scheduleGlobal(
+        function()
+            local startTime = os.clock()
+            for i = 1, MAX_FRAME, 1 do
+                local curFrame = {}
+                self._recordingFrame = self._recordingFrame + 1
+                self._physicsWorld:step(PHYSICAL_INTERVAL)
+                self._football:check() --判断球是否停止,如果球停止了则停止定时器
+                if self._football:isSleep() then
+                    if self._updateSchedule then
+                        Scheduler.unscheduleGlobal(self._updateSchedule)
+                    end
+                    print('final physical frames:=================' .. self._recordingFrame)
+                    self._frameCollection.frames = self._recordingFrame
+                    self:checkAndSend() --发送数据到服务,两端接受数据播放数据
+                    self._updateSchedule = nil
+                    self._football:clearTurn()
+                    break
+                end
+            end
+            print('calc time in sec : ', os.clock() - startTime)
+            --end
+        end,
+        0.001
+    )
+end
+```
+
+#### 客户端播放根据数据,表现效果
+```lua
+function _M:play(frameData)
+    print("============== FramePlayer frameData ="..tableplus.tostring(frameData,true))
+    self:removeFrameScheduler()
+    self:flush()
+    self._framelen = frameData.frames
+    self._curFrame = 0
+    for k, v in pairs(frameData.data) do
+        if self._singlePlayers[v.id] == nil then
+            if v.id == "ball" then
+                self._ballPlayer:play(v.frames) --播放每帧数据
+            else
+                print("unkown frame data========", v.id)
+            end
+        else
+            self._singlePlayers[v.id]:play(v.frames)
+        end
+    end
+
+    self._playScheduler =
+        Scheduler.scheduleGlobal(
+        function()
+            self._curFrame = self._curFrame + 1
+            self._ballPlayer:step(self._curFrame)
+            for k, v in pairs(self._singlePlayers) do
+                v:step(self._curFrame) --根据每帧数据,更新球的位置
+            end
+            for k1, v1 in pairs(frameData.springs) do
+                if v1.frame == self._curFrame then
+                    Game:shakeSpring(v1.id)
+                end
+            end
+            for k2, v2 in pairs(frameData.effs) do
+                if v2.frame == self._curFrame then
+                    local bNeedDelay = false
+                    if v2.eff == "bottlerupture" then
+                        --print("------------------------------------- 播放撞击特效 ----"..v2.id)
+                        local obstacleObj = Game._obstacleList:getSingleObstacleByName(v2.id)
+                        obstacleObj:bottleImpact()
+                        Game:playCombAnima(v2.uid)
+                    elseif v2.eff == "bottleself" then
+                        AudioManager.playAudio("audio/zhuangqiang.mp3", false)
+                    elseif v2.eff == "bomb" then
+                        --print("------------------------------------- 炸弹爆炸特效 ----"..v2.id)
+                        local obstacleObj = Game._obstacleList:getSingleObstacleByName(v2.id)
+                        obstacleObj:bombImpact()
+                        if v2.bSuperBall then
+                            self._football:changeBallSpriteFrame(Game:isMyClientRound(),false)
+                        end
+                        --self._framelen = self._framelen + 30
+                    elseif v2.eff == "bottlebomb" then
+                        local obstacleObj = Game._obstacleList:getSingleObstacleByName(v2.id)
+                        obstacleObj:bottleImpact()
+                        --obstacleObj:bottleBombImpact()
+                        Game:playCombAnima(v2.uid)
+                    elseif v2.eff == "walleff" then
+                        --print("------------------------------------- 撞墙特效 ----"..tableplus.formatstring(v2.pos,true))
+                        Game._wallAnima:setPosition(cc.p(v2.pos.x,v2.pos.y))
+                        Game._wallAnima:setAnimation(0, "collide", false)
+                        AudioManager.playAudio("audio/zhuangqiang.mp3", false)
+                    elseif v2.eff == "guide_bottlerupture" then
+                        Game._guide:guideBottleImpact()
+                    elseif v2.eff == "bottlerupture_bysuperball" then
+                        local bSuperBall = self._football:isShowSuperBallImg()
+                        local obstacleObj = Game._obstacleList:getSingleObstacleByName(v2.id)
+                        if bSuperBall then
+                            obstacleObj:bottleBombImpact()
+                        else
+                            obstacleObj:bottleImpact()
+                        end
+                        Game:playCombAnima(v2.uid)
+                    end
+                end
+            end
+            Game:checkGameIsOver()
+            if self._curFrame >= self._framelen + 30 then
+                self:onPlayDone(false)
+            end
+        end,
+        PHYSICAL_INTERVAL
+    )
+end
+```
+
+#### play()初始化球更新位置需要的数据,step()函数根据帧数据迭代更新球位置
+```lua
+function _M:play(frameCollection)
+    self._finished = false
+    self._bCatchBall = false
+    self._frameCollection = frameCollection
+    self._curIndex = 0
+    self:findNextFrame()
+end
+
+function _M:findNextFrame()
+    self._curIndex = self._curIndex + 1
+    self._curFrame = self._frameCollection[self._curIndex]
+    self._targetFrame = self._frameCollection[self._curIndex + 1]
+    if self._curFrame == nil or self._targetFrame == nil then
+        self._finished = true
+        self._frameCollection = nil
+        self._targetFrame = nil
+        self._curFrame = nil
+        if self._isBall then
+            --self._player:pauseTail()
+        end
+        return
+    end
+    local velocity = cc.p(self._targetFrame.x - self._curFrame.x,self._targetFrame.y - self._curFrame.y)
+    cc.pNormalize(velocity)
+    cc.pMul(velocity,self._curFrame.velocityLen)
+
+    self._curStep = 0
+    self._frameCount = (self._targetFrame.frame - self._curFrame.frame)
+    local duration = self._frameCount * PHYSICAL_INTERVAL
+
+    self._offX = (self._targetFrame.x - self._curFrame.x) - velocity.x * duration
+    self._baseX = velocity.x * duration
+
+    self._offY = (self._targetFrame.y - self._curFrame.y) - velocity.y * duration
+    self._baseY = velocity.y * duration
+
+    self._angularSpeed = self._curFrame.speedR
+
+    self._travelDistance = math.sqrt(math.pow(self._targetFrame.x - self._curFrame.x, 2) + math.pow(self._targetFrame.y - self._curFrame.y, 2))
+end
+
+function _M:step(globalStep)
+    if self._finished then
+        return
+    end
+    if globalStep == self._curFrame.frame then
+        if #self._frameCollection > self._curIndex then --后面还有
+            if self._isBall then
+                --Game['hideFuckImg'](Game)
+                --FuckUtil.playAudio('audio/kick.mp3', AUDIO_INTERVAL)
+            else
+                --FuckUtil.playAudio('audio/hit.mp3', AUDIO_INTERVAL)
+            end
+        end
+    end
+    if globalStep >= self._curFrame.frame then
+        if self._isBall then
+            --self._player:resumeTail()
+        end
+        self._curStep = self._curStep + 1
+        self._angularSpeed = self._angularSpeed * self._angularFrameDam
+        if self._curStep >= self._frameCount then
+            self._player:updatePos(self._targetFrame.x, self._targetFrame.y, self._angularSpeed)
+            self:contains(self._player,true)
+            --self:findNextFrame()
+        else
+            local stepRatio = self._curStep / self._frameCount
+            local traveledX = self._baseX * stepRatio + self._offX * math.pow(stepRatio, 1.4)
+            local traveledY = self._baseY * stepRatio + self._offY * math.pow(stepRatio, 1.4)
+            if math.sqrt(math.pow(traveledX, 2) + math.pow(traveledY, 2)) >= self._travelDistance then
+                ---这是一个有误差的模拟运算......这里在修正误差....
+                self._player:updatePos(self._targetFrame.x, self._targetFrame.y, self._angularSpeed)
+                self:contains(self._player,true)
+                --self:findNextFrame()
+            else
+                self._player:updatePos(self._curFrame.x + traveledX, self._curFrame.y + traveledY, self._angularSpeed)
+                self:contains(self._player,false)
+            end
+        end
+    end
+end
+
+-- contains函数判断对方是否接住球，接住了停止step,没有接住播放下一帧数据,直到数据播完
+function _M:contains(ball,bDoNextFrameFunc)
 end
 ```
 
